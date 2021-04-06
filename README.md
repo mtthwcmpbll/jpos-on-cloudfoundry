@@ -22,7 +22,7 @@ Getting router groups as admin...
 name          type
 default-tcp   tcp
 ```
-If you see a router group with type `tcp`, you should be set.
+If you see a router group with type `tcp`, you should be set.  If not, you'll need to work with your platform team to [enable TCP Routers in your environment](https://docs.pivotal.io/application-service/2-10/adminguide/enabling-tcp-routing.html).
 
 # Understanding the End Goal
 
@@ -151,7 +151,7 @@ The app looks like it's starting, but its failing the port health check because 
 
 The jPOS tutorial walks you through creating a handful of additional XML files in your deploy directory to configure the gateway to respond to connections and messages.  Since we're pushing the distribution as a directory for our dependencies, we're also pushing our deploy directory so we should be able to push these new files too.
 
-Download the [50_xml_server.xml](http://jpos.org/downloads/tutorials/gateway/50_xml_server.xml), [10_channel_jpos.xml](http://jpos.org/downloads/tutorials/gateway/10_channel_jpos.xml), and [30_txnmgr.xml](http://jpos.org/downloads/tutorials/gateway/30_txnmgr.xml) provided by the jPOS tutorial into your `gateway/src/dist/deploy`.
+Download the [50_xml_server.xml](http://jpos.org/downloads/tutorials/gateway/50_xml_server.xml), [10_channel_jpos.xml](http://jpos.org/downloads/tutorials/gateway/10_channel_jpos.xml), [20_mux_jpos.xml](http://jpos.org/downloads/tutorials/gateway/20_mux_jpos.xml), and [30_txnmgr.xml](http://jpos.org/downloads/tutorials/gateway/30_txnmgr.xml) provided by the jPOS tutorial into your `gateway/src/dist/deploy`.
 
 The file `50_xml_server.xml` has an explicit port 8000 configured, but the platform expects an application to start listening on whatever port is specified on the `PORT` environment variable.  It might be 8000, but it might be something else.  Taking a quick look through the [jpos codebase](https://github.com/jpos/jPOS) for any usage of `System.getenv`, we see that the [Environment class tries to interpolate config in the format `${VARIABLE}`](https://github.com/jpos/jPOS/blob/a4d492423f248a9a582b0344f9701f543b05250a/jpos/src/main/java/org/jpos/core/Environment.java#L106) from environment variables.
 
@@ -175,9 +175,76 @@ cf push
 
 We're seeing some expected logs coming over standard out/err, so for now we can check this box.  Things to watch out for down the road would be to update the app's configuration to explicitly _not_ log to files to avoid filling up the container's disk quota.
 
-# Testing Our Deployment
+# TCP Routing, Sockets, & Testing Our Deployment
 
-TODO
+By default, our app got an HTTP route based on our application's name assigned automatically.  You can see the routes assigned to your app in the app metadata:
+```bash
+# Get metadata for the apps in your currently-targeted space
+cf apps
+Getting apps in org demo / space dev as admin...
+
+name   requested state   processes           routes
+jpos   started           web:1/1, task:0/0   jpos.apps.millbrae.cf-app.com
+```
+
+If we go to https://jpos.apps.millbrae.cf-app.com in a browser, we get a bunch of timeouts logged by JPOS because it's expecting XML data coming over the connection and it's getting a bunch of HTTP protocol junk instead!  We need to [give the application a TCP route instead](https://docs.pivotal.io/application-service/2-10/devguide/deploy-apps/routes-domains.html#http-vs-tcp-routes).  A TCP route consists of a TCP domain assigned to the platform and a port.  We can find a TCP domain with the `cf domains` command:
+```bash
+# List the domains available in the platform
+cf domains
+
+Getting domains in org demo as admin...
+
+name                       availability   internal   protocols
+apps.internal              shared         true       http
+apps.millbrae.cf-app.com   shared                    http
+tcp.millbrae.cf-app.com    shared                    tcp
+```
+
+We can add the tcp domain as a route without any port and the platform will assign us an unused one, or we can explicitly specify a port in the route:
+```yaml
+---
+applications:
+- name: jpos
+  path: build/install/gateway
+  routes:
+  - route: tcp.millbrae.cf-app.com:1024
+  ...
+```
+
+Let's test this new TCP route with the process described in the jPOS tutorials:
+```bash
+# Use netcat to connect to our app using the TCP domain and port number
+nc tcp.millbrae.cf-app.com 1024
+
+# Paste in the default request
+<isomsg>
+   <field id="0" value="0800" />
+   <field id="11" value="000001" />
+   <field id="41" value="00000001" />
+   <field id="70" value="301" />
+</isomsg>
+```
+
+You should see a response from the server:
+```
+<isomsg>
+  <!-- org.jpos.iso.packager.XMLPackager -->
+  <field id="0" value="0810"/>
+  <field id="11" value="000001"/>
+  <field id="37" value="718906"/>
+  <field id="38" value="613163"/>
+  <field id="39" value="00"/>
+  <field id="41" value="00000001"/>
+  <field id="70" value="301"/>
+</isomsg>
+```
+If you check your app logs with `cf logs jpos --recent`, you should see the server-side response logging there as well.
+
+If you make another connection and send more messages, you'll see that the logs have a `web/0` label that shows they're being handled by the same instance with that name.  Let's scale the app and see how things work:
+```bash
+# Scale the app to three instances
+cf scale jpos -i 3
+```
 
 # The Recipe
 
