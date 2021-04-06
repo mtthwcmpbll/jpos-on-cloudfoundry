@@ -4,19 +4,22 @@ This repository shows a proof-of-concept of a jPOS.org transaction server runnin
 
 It's mostly based on the existing jPOS tutorials available at the time of the POC, and doesn't provide a complete or production-ready transaction manager.  Instead, it aims to show that the socket-based communication and file-based configuration aren't a blocker for this kind of deployment.
 
+If you'd like to skip over the step-by-step exploration and get straight to "what do I do to make it work", you can jump to the [The Recipe](#the-recipe) at the bottom.
+
 # What We'll Need
 
 **A jPOS server to push.**  We'll be following along with the official [jPOS tutorials](http://jpos.org/tutorials), so we'll clone the [jPOS-template](https://github.com/jpos/jPOS-template) repository and build/configure that.
-```
-git clone https://github.com/jpos/jPOS-template.git gateway
-cd gateway
-rm -fr .git
+```bash
+➜ git clone https://github.com/jpos/jPOS-template.git gateway
+➜ cd gateway
+➜ rm -fr .git
 ```
 The commands in the rest of the tutorial will assume the jPOS codebase lives in the `gateway` directory in the root of this repo.
 
 **A Cloud Foundry environment with TCP Routing configured.**  jPOS uses persistent socket-based communication between the server and its clients.  Some CF environments default to TCP routing disabled, so you can check if this is available with the following command:
-```
+```bash
 ➜ cf router-groups
+
 Getting router groups as admin...
 
 name          type
@@ -55,13 +58,13 @@ When you push an application to a Cloud Foundry environment, it sends the applic
 
 The obvious starting point is to push the JAR and see if it works:
 ```bash
-cd gateway
+➜ cd gateway
 
 # Build the jPOS-template gateway
-./gradlew clean build installApp
+➜ ./gradlew clean build installApp
 
 # Check that the build looks like the directory distribution from the tutorial
-ls -lah build/install/gateway
+➜ ls -lah build/install/gateway
 
 total 8
 drwxr-xr-x   7 mjcampbell  staff   224B Apr  5 10:37 .
@@ -73,13 +76,13 @@ drwxr-xr-x  20 mjcampbell  staff   640B Apr  5 10:37 lib
 drwxr-xr-x   3 mjcampbell  staff    96B Apr  5 10:37 log
 
 # Log into your PCF environment
-cf login --skip-ssl-validation -a https://api.sys.millbrae.cf-app.com
+➜ cf login --skip-ssl-validation -a https://api.sys.millbrae.cf-app.com
 
 # Target the org and space to deploy the app in your environment
-cf cf target -o demo -s dev
+➜ cf cf target -o demo -s dev
 
 # Push the app!
-cf push -p build/install/gateway/gateway-2.1.6-SNAPSHOT.jar jpos
+➜ cf push -p build/install/gateway/gateway-2.1.6-SNAPSHOT.jar jpos
 ```
 
 You'll see the app fail to start, and running `cf logs jpos` should show the error:
@@ -94,8 +97,8 @@ I tried a few ways to combine all of these JARs into a single self-running uberj
 
 We have another option: we can push the whole directory, including the `lib` directory.  We'll have to do a little bit more explicit configuration of the buildpack since the Java buildpack won't know how to run by default anymore.  It's not a perfect solution, but its useful for working while you refactor an app to be more self-contained.  Let's try it now:
 
-```
-cf push -p build/install/gateway jpos
+```bash
+➜ cf push -p build/install/gateway jpos
 ```
 
 If you check the logs again, it should be complaining that it can't find the `java` command:
@@ -116,7 +119,6 @@ We can see it calling the buildpack's bundled Java binary from `$PWD/.java-build
 
 Instead, we can override the buildpack's `command`.  Let's move to an [application manifest file](https://docs.cloudfoundry.org/devguide/deploy-apps/manifest-attributes.html) instead of specifying the push arguments on the command line.  Create a `manifest.yml` in the root of your repo:
 ```yaml
----
 ---
 applications:
 - name: jpos
@@ -166,9 +168,9 @@ Let's change the port `<attr>` in the config file `50_xml_server.xml` to the fol
 
 If we rebuild and push, it starts up!
 ```bash
-./gradlew clean build installApp
+➜ ./gradlew clean build installApp
 
-cf push
+➜ cf push
 ```
 
 ## Logging
@@ -180,7 +182,7 @@ We're seeing some expected logs coming over standard out/err, so for now we can 
 By default, our app got an HTTP route based on our application's name assigned automatically.  You can see the routes assigned to your app in the app metadata:
 ```bash
 # Get metadata for the apps in your currently-targeted space
-cf apps
+➜ cf apps
 Getting apps in org demo / space dev as admin...
 
 name   requested state   processes           routes
@@ -190,7 +192,7 @@ jpos   started           web:1/1, task:0/0   jpos.apps.millbrae.cf-app.com
 If we go to https://jpos.apps.millbrae.cf-app.com in a browser, we get a bunch of timeouts logged by JPOS because it's expecting XML data coming over the connection and it's getting a bunch of HTTP protocol junk instead!  We need to [give the application a TCP route instead](https://docs.pivotal.io/application-service/2-10/devguide/deploy-apps/routes-domains.html#http-vs-tcp-routes).  A TCP route consists of a TCP domain assigned to the platform and a port.  We can find a TCP domain with the `cf domains` command:
 ```bash
 # List the domains available in the platform
-cf domains
+➜ cf domains
 
 Getting domains in org demo as admin...
 
@@ -215,8 +217,10 @@ Let's test this new TCP route with the process described in the jPOS tutorials:
 ```bash
 # Use netcat to connect to our app using the TCP domain and port number
 nc tcp.millbrae.cf-app.com 1024
+```
 
-# Paste in the default request
+Paste in the following example request into the open netcat session:
+```xml
 <isomsg>
    <field id="0" value="0800" />
    <field id="11" value="000001" />
@@ -226,7 +230,7 @@ nc tcp.millbrae.cf-app.com 1024
 ```
 
 You should see a response from the server:
-```
+```xml
 <isomsg>
   <!-- org.jpos.iso.packager.XMLPackager -->
   <field id="0" value="0810"/>
@@ -246,8 +250,23 @@ If you make another connection and send more messages, you'll see that the logs 
 cf scale jpos -i 3
 ```
 
-# The Recipe
+Monitor the app with `cf apps` until you see all three instances up and running.  If we open two terminals now and run the netcat test in each one, you'll see that the connections handles successfully and that the app logs reports the two connections are handles by different instances (maybe `web/0` and `web/1` this time).  If you make several requests with an open netcat session before closing it, you'll also see that it'd handled by the _same_ instance.  This illustrates the persistent connection a client makes to the jPOS instance, even when we have horizontally scaled out.  As long as a sequence of transactions can be handled by a single instance without knowledge of the other transactions, we're on our way to handling transactions on Cloud Foundry.
+
+# <a id="the-recipe"></a>The Recipe
 
 Here's the complete list of changes we had to run through in order to get jPOS running on Cloud Foundry:
 
-TODO
+1. Push the application's directory instead of a single JAR file
+1. Override the default buildpack command to include the full jPOS library path
+1. Attach a TCP route to your application
+1. Configure the hardcoded XML Server port to use the `${PORT}` environment variable instead
+
+The included `manifest.yml` in this repository can be used to do the first three, and you'll have to make changes to your own jPOS XML configuration.
+
+# Next Steps
+
+Things to look into further for your own jPOS deployment:
+
+- Look for any external database connections or other dependencies, and pull those from the environment as we did for the `PORT` mapping.
+- Dig into the logging configuration to make sure that we're seeing _all_ logs coming over standard out/err
+- Investigate packaging jPOS as an uberjar containing all libraries and configuraton to use the Java buildpack without so much fine-tuning
