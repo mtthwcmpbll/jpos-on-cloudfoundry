@@ -75,7 +75,7 @@ drwxr-xr-x   4 mjcampbell  staff   128B Apr  5 10:37 deploy
 drwxr-xr-x  20 mjcampbell  staff   640B Apr  5 10:37 lib
 drwxr-xr-x   3 mjcampbell  staff    96B Apr  5 10:37 log
 
-# Log into your PCF environment
+# Log into your Cloud Foundry environment
 ➜ cf login --skip-ssl-validation -a https://api.sys.millbrae.cf-app.com
 
 # Target the org and space to deploy the app in your environment
@@ -83,6 +83,13 @@ drwxr-xr-x   3 mjcampbell  staff    96B Apr  5 10:37 log
 
 # Push the app!
 ➜ cf push -p build/install/gateway/gateway-2.1.6-SNAPSHOT.jar jpos
+
+# Verify your app is running
+➜ cf apps
+Getting apps in org demo / space dev as admin...
+
+name   requested state   processes           routes
+jpos   failed            web:0/1, task:0/0   jpos.apps.millbrae.cf-app.com
 ```
 
 You'll see the app fail to start, and running `cf logs jpos` should show the error:
@@ -171,6 +178,12 @@ If we rebuild and push, it starts up!
 ➜ ./gradlew clean build installApp
 
 ➜ cf push
+
+➜ cf apps
+Getting apps in org demo / space dev as admin...
+
+name   requested state   processes           routes
+jpos   started            web:1/1, task:0/0   jpos.apps.millbrae.cf-app.com
 ```
 
 ## Logging
@@ -252,6 +265,8 @@ cf scale jpos -i 3
 
 Monitor the app with `cf apps` until you see all three instances up and running.  If we open two terminals now and run the netcat test in each one, you'll see that the connections handles successfully and that the app logs reports the two connections are handles by different instances (maybe `web/0` and `web/1` this time).  If you make several requests with an open netcat session before closing it, you'll also see that it'd handled by the _same_ instance.  This illustrates the persistent connection a client makes to the jPOS instance, even when we have horizontally scaled out.  As long as a sequence of transactions can be handled by a single instance without knowledge of the other transactions, we're on our way to handling transactions on Cloud Foundry.
 
+This repository includes a basic JMeter test script under `performance-test/jmeter-test.jmx` that slowly increases the number of users making new connections with the sample request above.  You can open this in JMeter, change the target URL and port in the TCP Sampler to match your TCP route, and run this to watch where connections start failing and apps start crashing.  Play with `cf scale jpos -i ...` and the number of instances to find a good balance that keeps apps healthy under expected load.
+
 # <a id="the-recipe"></a>The Recipe
 
 Here's the complete list of changes we had to run through in order to get jPOS running on Cloud Foundry:
@@ -260,6 +275,8 @@ Here's the complete list of changes we had to run through in order to get jPOS r
 1. Override the default buildpack command to include the full jPOS library path
 1. Attach a TCP route to your application
 1. Configure the hardcoded XML Server port to use the `${PORT}` environment variable instead
+1. Tune the jPOS server to handle the right number of connections for your instance CPU and memory constraints.
+1. Identify a resource constraint that you can publish as a custom metric and configure app autoscaling to automatically add or remove instances when needed.
 
 The included `manifest.yml` in this repository can be used to do the first three, and you'll have to make changes to your own jPOS XML configuration.
 
